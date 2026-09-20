@@ -1,0 +1,18 @@
+[
+  {
+    "input": "北京现在天气怎么样？",
+    "expect_tool": "get_weather",
+    "expect_arguments": {
+      "city": "北京"
+    },
+    "expect_answer_contains": ["北京", "晴"]
+  },
+  {
+    "input": "请用 Python 计算 12 * 12，只给我结果。",
+    "expect_tool": "run_python",
+    "expect_arguments_contains": {
+      "code": ["12", "12", "*"]
+    },
+    "expect_answer_contains": ["144"]
+  }
+]

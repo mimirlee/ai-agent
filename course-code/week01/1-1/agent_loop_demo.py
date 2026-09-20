@@ -163,6 +163,12 @@ def parse_assistant(text: str) -> dict:
     return {"role": "assistant", "content": [{"type": "text", "text": text}]}
 
 
+async def run_to_call(call: dict, tools: dict) -> dict:
+    """统一执行工具 方便后续接入 sandbox 和其他 runtime。"""
+    tool = tools[call["name"]]
+    return await tool["handler"](call["arguments"])
+
+
 async def agent_loop(user_text: str, verbose: bool = True) -> dict:
     """
     一个最小可运行的agent loo
@@ -188,6 +194,7 @@ async def agent_loop(user_text: str, verbose: bool = True) -> dict:
             },
             "run_python": {
                 "handler": run_python_tool,
+                "sandboxed": True,
             }
         }
     }
@@ -203,9 +210,69 @@ async def agent_loop(user_text: str, verbose: bool = True) -> dict:
         raw_text = await llm_complete(ctx["messages"], on_text_delta=on_text_delta)
         if verbose:
             print()
+        assistant = parse_assistant(raw_text)
+        ctx["messages"].append(assistant)
+        calls = [call for call in assistant["content"] if call["type"] == "toolCall"]
+        if verbose:
+            print("[assistant]", render(assistant))
+        else:
+            print("[message_end] assistant streamed")
+        # Step 2. 从 assistant message 里找出 toolCall。
+        if not calls:
+            break
+        # Step 3. 真正执行工具
+        for call in calls:
+            tool_meta = ctx["tools"][call["name"]]
+            executed_calls.append({
+                "id": call["id"],
+                "name": call["name"],
+                "arguments": call["arguments"],
+                "sandboxed": tool_meta["sandboxed"],
+            })
+            if verbose:
+                print("[tool_start]", call["name"], call["arguments"])
+            result = await run_to_call(call, ctx["tools"])
+            tool_results.append({
+                "tool_call_id": call["id"],
+                "tool_name": call["name"],
+                "details": result["details"],
+            })
+
+            if verbose:
+                print("[tool_end]", call["name"], result["details"])
+            # Step 4. 把 tool result 回填到上下文，供下一轮模型继续使用。
+            tool_result = {
+                "role": "toolResult",
+                "tool_call_id": call["id"],
+                "tool_name": call["name"],
+                "content": result["content"],
+                "details": result["details"],
+                "is_error": not result["details"].get("ok", True),
+            }
+            ctx["messages"].append(tool_result)
+            if verbose:
+                print("[tool_end]", call["name"], result["details"])
+        if verbose:
+            print("[turn_end]")
+            print("[turn_start]")
+    final_answer = render(ctx["messages"][-1])
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
+    result = {
+        "final_answer": final_answer,
+        "messages": ctx["messages"],
+        "tool_calls": executed_calls,
+        "tool_results": tool_results,
+        "duration_ms": duration_ms,
+    }
+    if verbose:
+        print("[turn_end]")
+        print("[agent_end]")
+        print("\nFinal answer:")
+        print(final_answer)
+    return result
 
 
 if __name__ == '__main__':
     if not os.environ.get("DEEPSEEK_API_KEY"):
         raise RuntimeError("请先设置 DEEPSEEK_API_KEY")
-    asyncio.run()
+    asyncio.run(agent_loop("今天星期几？北京什么天气？"))
